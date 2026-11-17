@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <title>세발자전거 열기</title>
+  <title>앱 바로가기</title>
   <style>
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f0; color: #25382e; font-family: system-ui, sans-serif; }
     main { max-width: 32rem; padding: 2rem; text-align: center; }
@@ -13,32 +13,63 @@
     p { line-height: 1.7; }
     a { display: inline-block; padding: .85rem 1.5rem; border-radius: .7rem; background: #315d48; color: white; text-decoration: none; }
     a:focus-visible { outline: 3px solid #a26514; outline-offset: 4px; }
+    ul { list-style: none; padding: 0; display: grid; gap: .8rem; }
+    li a, li span { display: block; padding: 1rem; border-radius: .7rem; }
+    li span { background: #e5e7e2; color: #555; }
     [hidden] { display: none; }
   </style>
 </head>
 <body>
   <main>
-    <h1>세발자전거</h1>
-    <p id="status" role="status">독서일지를 준비하고 있습니다.</p>
-    <a id="open" hidden>독서일지 열기</a>
-    <noscript><p>자동 이동을 위해 브라우저에서 자바스크립트를 허용해 주세요.</p></noscript>
+    <h1>앱 바로가기</h1>
+    <p id="status" role="status">사용할 앱을 선택해 주세요.</p>
+    <a id="open" hidden>앱 열기</a>
+    <nav aria-label="앱 선택"><ul id="apps"></ul></nav>
+    <noscript><p>앱 목록과 자동 이동을 사용하려면 브라우저에서 자바스크립트를 허용해 주세요.</p></noscript>
   </main>
   <script>
-    // 아래 따옴표 안에 평소 접속하는 프런트 웹앱의 /exec 주소를 넣으세요.
+    // 각 url에는 접속용 웹앱의 /exec 주소만 입력합니다. 미설정은 빈 문자열로 둡니다.
     // 저장 서버 주소나 인증 토큰은 넣지 않습니다.
-    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwfcKUZCE6rx9kQFmQ--XefaeOcrWX-QHX322DvHBV_1iZJ77xfAXhDPWNgFfmB0ijHHg/exec";
+    const APPS = [
+      { id: "books", name: "독서일지", url: "https://script.google.com/macros/s/AKfycbwfcKUZCE6rx9kQFmQ--XefaeOcrWX-QHX322DvHBV_1iZJ77xfAXhDPWNgFfmB0ijHHg/exec" },
+      { id: "kodit", name: "KODIT 뉴스 클리핑", url: "https://script.google.com/macros/s/AKfycbw2J78Ko9XRCjUC1DsEwOGP5PJBYhRNcgYuplE3nd-YoUsGlfYVebuqpfFeH5r9ipwZ1A/exec" },
+      { id: "briefing", name: "독서 브리핑", url: "" }
+    ];
 
     const status = document.getElementById("status");
     const openLink = document.getElementById("open");
-    // 공개용 배포 주소만 허용합니다. 인증 정보가 섞인 쿼리 문자열도 제외합니다.
-    if (/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(WEB_APP_URL)) {
-      openLink.href = WEB_APP_URL;
-      openLink.hidden = false;
-      status.textContent = "독서일지로 이동합니다. 자동으로 열리지 않으면 아래 버튼을 눌러 주세요.";
-      window.location.replace(WEB_APP_URL);
-    } else {
-      status.textContent = "접속 주소가 아직 설정되지 않았습니다. index.html의 WEB_APP_URL을 확인해 주세요.";
+    const list = document.getElementById("apps");
+    // 공개용 배포 주소만 허용합니다. 쿼리 문자열과 외부 도메인은 제외합니다.
+    const validUrl = url => /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url);
+    for (const app of APPS) {
+      const item = document.createElement("li");
+      const link = document.createElement(validUrl(app.url) ? "a" : "span");
+      if (validUrl(app.url)) {
+        link.href = "#" + app.id;
+        link.textContent = app.name;
+      } else {
+        link.textContent = app.name + " · 준비 중";
+      }
+      item.appendChild(link);
+      list.appendChild(item);
     }
+
+    function openApp() {
+      openLink.hidden = true;
+      openLink.removeAttribute("href");
+      const id = window.location.hash.slice(1);
+      if (!id) { status.textContent = "사용할 앱을 선택해 주세요."; return; }
+      const app = APPS.find(app => app.id === id);
+      if (!app) { status.textContent = "해당 앱을 찾을 수 없습니다. 아래 목록에서 선택해 주세요."; return; }
+      if (!validUrl(app.url)) { status.textContent = app.name + "의 접속 주소는 준비 중입니다."; return; }
+      openLink.href = app.url;
+      openLink.textContent = app.name + " 열기";
+      openLink.hidden = false;
+      status.textContent = app.name + "로 이동합니다. 자동으로 열리지 않으면 열기 버튼을 눌러 주세요.";
+      window.location.replace(app.url);
+    }
+    window.addEventListener("hashchange", openApp);
+    openApp();
   </script>
 </body>
 </html>
