@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
+  <script>
+    // 고정 북마크는 그대로 유지하고, 매 접속 시 새 요청으로 최신 HTML을 받습니다.
+    // 두 번째 요청에서만 앱을 실행하며 내부 갱신 매개변수는 주소창에서 지웁니다.
+    window.__entryReady = false;
+    (() => {
+      const url = new URL(window.location.href);
+      if (!/^https?:$/.test(url.protocol)) { window.__entryReady = true; return; }
+      if (url.searchParams.has("__entry")) {
+        url.searchParams.delete("__entry");
+        window.history.replaceState(null, "", url.href);
+        window.__entryReady = true;
+        return;
+      }
+      url.searchParams.set("__entry", Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+      window.location.replace(url.href);
+    })();
+  </script>
   <title>앱 바로가기</title>
   <style>
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f0; color: #25382e; font-family: system-ui, sans-serif; }
@@ -20,7 +37,8 @@
   </style>
 </head>
 <body>
-  <main>
+  <noscript><style>main[hidden] { display: block; }</style></noscript>
+  <main id="entry-main" hidden>
     <h1>앱 바로가기</h1>
     <p id="status" role="status">접속 주소를 확인하고 있습니다.</p>
     <a id="open" hidden>앱 열기</a>
@@ -28,6 +46,9 @@
     <noscript><p>앱 목록과 자동 이동을 사용하려면 브라우저에서 자바스크립트를 허용해 주세요.</p></noscript>
   </main>
   <script>
+    (() => {
+    if (!window.__entryReady) return;
+    document.getElementById("entry-main").hidden = false;
     // 각 url에는 접속용 웹앱의 /exec 주소만 입력합니다. 미설정은 빈 문자열로 둡니다.
     // 저장 서버 주소나 인증 토큰은 넣지 않습니다.
     const APPS = [
@@ -73,6 +94,7 @@
     }
     window.addEventListener("hashchange", openApp);
     openApp();
+    })();
   </script>
 </body>
 </html>
