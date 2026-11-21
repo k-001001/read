@@ -198,11 +198,11 @@ try {
     Write-Host ""
     Write-Host "GitHub 작업 도구 [v$ToolVersion | 최종 수정 $ToolUpdated]"
     Write-Host ""
-    if ($SyncConfig.deployment) { Write-Host "프로젝트  $repoName / 작업 $WorkBranch / 배포 $ReleaseBranch" } else { Write-Host "프로젝트  $repoName / 작업 $WorkBranch / 로컬 실행용" }
+    if ($SyncConfig.deployment) { Write-Host "프로젝트  $repoName / 작업 $WorkBranch / 배포 $ReleaseBranch" } else { Write-Host "프로젝트  $repoName / 작업 $WorkBranch / GitHub Pages 자동 배포" }
     Write-Host ""
     Write-Host "  [1] 작업 시작"
     Write-Host "  [2] 종료 백업"
-    if ($SyncConfig.deployment) { Write-Host "  [3] 프로젝트 배포" } else { Write-Host "  [3] 배포 없음 (로컬 실행용)" }
+    if ($SyncConfig.deployment) { Write-Host "  [3] 프로젝트 배포" } else { Write-Host "  [3] GitHub Pages 배포 (백업 후 자동 배포)" }
     Write-Host "  [4] 상태 확인"
     Write-Host "  [5] 닫기"
     Write-Host ""
@@ -210,10 +210,10 @@ try {
     Write-Host "기능"
     Write-Host "  1  최신 프로그램 가져오기  | 작업 전"
     Write-Host "  2  검사·GitHub 백업        | AI 종료 정리 후"
-    if ($SyncConfig.deployment) { Write-Host "  3  실제 서비스에 반영      | 2번 완료 후, 필요 시" } else { Write-Host "  3  사용 안 함             | 이 프로젝트는 로컬 실행" }
+    if ($SyncConfig.deployment) { Write-Host "  3  실제 서비스에 반영      | 2번 완료 후, 필요 시" } else { Write-Host "  3  GitHub Pages에 반영    | 변경사항 백업 후 자동 배포" }
     Write-Host "  4  변경·업로드 상태 조회   | 변경 없음"
     Write-Host ""
-    if ($SyncConfig.deployment) { Write-Host "순서  1 → AI 작업 → AI에게 '종료' → 2 → 필요 시 3" } else { Write-Host "순서  1 → AI 작업 → AI에게 '종료' → 2 / 실행: 각 PC에서" }
+    if ($SyncConfig.deployment) { Write-Host "순서  1 → AI 작업 → AI에게 '종료' → 2 → 필요 시 3" } else { Write-Host "순서  1 → AI 작업 → AI에게 '종료' → 2 또는 3" }
     Write-Host "저장  프로그램: GitHub / $($SyncConfig.dataNotice)"
     Write-Host "주의  가져오기·백업·배포: 인터넷 필요 / 진행 중 창 유지"
     Write-Host "오류  실행 중단 → 오류 화면을 AI에게 전달"
@@ -222,6 +222,12 @@ try {
     if ($lastResult) { Write-Host "직전 결과  $lastResult" -ForegroundColor Cyan; Write-Host "" }
     $choice = (Read-Host "실행할 번호 (1~5)").Trim()
     $startedAt = Get-Date
+
+    if ($choice -eq '3' -and -not $SyncConfig.deployment) {
+        Write-Host "GitHub Pages는 dev 백업 시 자동 배포됩니다. 백업을 실행합니다." -ForegroundColor Cyan
+        Write-Host "배포 완료 여부는 GitHub Actions 또는 웹사이트에서 확인해 주세요."
+        $choice = '2'
+    }
 
     switch ($choice) {
         "1" {
@@ -362,7 +368,7 @@ try {
             Invoke-Git status --short --branch
             Invoke-Git log -1 --oneline
 
-            if ($SyncConfig.deployment) { Write-Host "GitHub 백업 완료. 실제 웹앱은 그대로입니다. 반영하려면 [3]을 선택하세요." } else { Write-Host "GitHub 백업 완료. 다른 PC에서는 [1]로 가져온 뒤 로컬에서 실행하세요." }
+            if ($SyncConfig.deployment) { Write-Host "GitHub 백업 완료. 실제 웹앱은 그대로입니다. 반영하려면 [3]을 선택하세요." } else { Write-Host "GitHub 백업 완료. GitHub Pages 배포 상태는 Actions 또는 웹사이트에서 확인하세요." }
         }
 
         "3" {
