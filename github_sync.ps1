@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 # 사용자에게 새 버전을 배포할 때 버전과 마지막 수정 날짜를 함께 갱신한다.
-$ToolVersion = '3.1.2'
+$ToolVersion = '3.1.5'
 $ToolUpdated = '2026-11-21'
 $ReleaseLabel = "v$ToolVersion | 최종 수정 $ToolUpdated"
 $QuietGit = @(if ($Action -eq 'Menu') { '--quiet' })
@@ -331,11 +331,12 @@ function Publish-Ref([string]$Commit, [string]$Branch) {
     Invoke-Git -c push.followTags=false -c "remote.$Remote.mirror=false" push @QuietGit --recurse-submodules=no $Remote "${Commit}:refs/heads/$Branch" | Out-Host
 }
 
-function Confirm-Publish([string]$Target) {
+function Confirm-Publish([string]$Target, [switch]$DirectDeploy) {
     if ($Yes) { return }
     if ($Action -ne 'Menu') { throw "배포 대상: $Target. 확인 후 -Yes를 붙여 실행하세요." }
     Write-Host ''
     Write-Host "  배포 대상: $Target" -ForegroundColor Yellow
+    if ($DirectDeploy) { return }
     if ((Read-Host '배포 작업을 진행하려면 DEPLOY를 입력하세요 (취소: Enter)') -cne 'DEPLOY') {
         throw [OperationCanceledException]::new('배포 요청을 취소했습니다.')
     }
@@ -392,7 +393,7 @@ function Merge-RemoteForBackup([string]$Base, [string]$SavedHead) {
     }
 }
 
-function Backup-Project {
+function Backup-Project([switch]$DirectDeploy) {
     Write-WorkStep 1 4 '작업 브랜치 확인 및 원격 정보 가져오기 (fetch)'
     Assert-NoPendingOperation
     Assert-WorkBranch
@@ -482,7 +483,7 @@ function Backup-Project {
     }
     Assert-AllowedPaths @(Get-OutgoingPaths $base $head)
     if ($SyncConfig.deployment.mode -eq 'backup-push') {
-        Confirm-Publish "$Remote/$WorkBranch 백업 및 자동 배포"
+        Confirm-Publish "$Remote/$WorkBranch 백업 및 자동 배포" -DirectDeploy:$DirectDeploy
     }
     Write-WorkStep 4 4 '원격 작업 브랜치로 푸시 (push)'
     Publish-Ref $head $WorkBranch
@@ -502,7 +503,8 @@ function Get-GitHubRepository {
 function Deploy-Project {
     $deploy = $SyncConfig.deployment
     if (-not $deploy) { throw '이 프로젝트는 배포 미설정입니다. sync.config.json을 확인하세요.' }
-    if ($deploy.mode -eq 'backup-push') { Backup-Project; return }
+    $directDeploy = $Action -eq 'Menu'
+    if ($deploy.mode -eq 'backup-push') { Backup-Project -DirectDeploy:$directDeploy; return }
     Write-WorkStep 1 4 '로컬과 원격 작업 브랜치의 커밋 일치 여부 확인'
     Assert-NoPendingOperation
     Assert-WorkBranch
@@ -552,7 +554,7 @@ function Deploy-Project {
     Assert-WorkBranch
     if ((Invoke-Git rev-parse HEAD) -cne $head) { throw '검사 중 커밋이 바뀌었습니다.' }
     Write-WorkStep 3 4 '배포 대상 확인'
-    Confirm-Publish $target
+    Confirm-Publish $target -DirectDeploy:$directDeploy
 
     switch ($deploy.mode) {
         'release-branch' {
@@ -577,11 +579,23 @@ function Deploy-Project {
         }
         'legacy' {
             Write-WorkStep 4 4 '기존 프로젝트 배포 스크립트 실행'
-            . $deployFile
-            if (-not (Get-Command Invoke-WebAppDeployment -CommandType Function -ErrorAction SilentlyContinue)) {
-                throw '기존 배포 스크립트에 Invoke-WebAppDeployment 함수가 없습니다.'
+            # 기존 필드를 초기화하고 프로젝트가 자체 통계 항목을 추가할 수 있게 한다.
+            $script:RunStats = @{
+                ChecksPlanned = 0
+                ChecksPassed = 0
+                CheckNote = ''
+                DeployRuns = 0
+                RunId = ''
             }
-            Invoke-WebAppDeployment
+            try {
+                . $deployFile
+                if (-not (Get-Command Invoke-WebAppDeployment -CommandType Function -ErrorAction SilentlyContinue)) {
+                    throw '기존 배포 스크립트에 Invoke-WebAppDeployment 함수가 없습니다.'
+                }
+                Invoke-WebAppDeployment
+            } finally {
+                Remove-Variable -Name RunStats -Scope Script -ErrorAction SilentlyContinue
+            }
         }
     }
 }
