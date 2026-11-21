@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 # 사용자에게 새 버전을 배포할 때 버전과 마지막 수정 날짜를 함께 갱신한다.
-$ToolVersion = '3.1.6'
+$ToolVersion = '3.1.7'
 $ToolUpdated = '2026-11-21'
 $ReleaseLabel = "v$ToolVersion | 최종 수정 $ToolUpdated"
 $QuietGit = @(if ($Action -eq 'Menu') { '--quiet' })
@@ -258,8 +258,21 @@ function Get-Executable([string]$Name) {
     return $command.Source
 }
 
-function Invoke-Step([string]$Executable, [object[]]$Arguments, [string]$Label) {
+function Invoke-Step([string]$Executable, [object[]]$Arguments, [string]$Label, [switch]$QuietOnSuccess) {
     Write-Host "실행: $Label"
+    if ($QuietOnSuccess) {
+        # Windows PowerShell 5.1에서는 리디렉션한 stderr도 오류 레코드로 표시된다.
+        $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = $null
+        $output = & $Executable @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode -or $exitCode -ne 0) {
+            $output | ForEach-Object { [string]$_ } | Out-Host
+            if ($null -eq $exitCode) { throw "$Label 실행을 시작하지 못했습니다." }
+            throw "$Label 실패 (종료 코드 $exitCode)."
+        }
+        return
+    }
     & $Executable @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "$Label 실패 (종료 코드 $LASTEXITCODE)." }
 }
@@ -271,26 +284,27 @@ function Invoke-NpmIfDefined([string]$Task) {
     $node = Find-NodeRuntime
     $npm = Get-Command npm.cmd -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue
     if ($npm) {
-        Invoke-Step $npm.Source @('run', $Task) "npm run $Task"
+        Invoke-Step $npm.Source @('run', $Task) "npm run $Task" -QuietOnSuccess
     } elseif ($taskEntry.Value -match '^node ([A-Za-z0-9_./-]+\.(?:cjs|mjs|js))$' -and
         -not $package.scripts.PSObject.Properties["pre$Task"] -and -not $package.scripts.PSObject.Properties["post$Task"]) {
         $taskFile = Get-ProjectFile $Matches[1]
-        Invoke-Step $node @($taskFile) $Task
+        Invoke-Step $node @($taskFile) $Task -QuietOnSuccess
     } else {
         throw "'$Task' 실행에는 npm이 필요합니다."
     }
 }
 
 function Invoke-ProjectChecks {
-    if (-not ($SyncConfig.checkTasks.Count + $SyncConfig.checkCommands.Count)) {
-        Write-Host '  프로젝트 검사 명령이 설정되어 있지 않아 검사를 건너뜁니다.'
-        return
+    $checkCount = $SyncConfig.checkTasks.Count + $SyncConfig.checkCommands.Count
+    if (-not $checkCount) {
+        throw '배포 전 검사 설정이 필요합니다. sync.config.json의 checkTasks 또는 checkCommands를 지정하세요.'
     }
     Write-Host '  프로젝트 검사 명령을 실행합니다.'
     foreach ($task in $SyncConfig.checkTasks) { Invoke-NpmIfDefined $task }
     foreach ($step in $SyncConfig.checkCommands) {
-        Invoke-Step (Get-Executable $step.command) $step.args $step.command
+        Invoke-Step (Get-Executable $step.command) $step.args $step.command -QuietOnSuccess
     }
+    Write-Host "  프로젝트 검사 통과: $checkCount 단계"
 }
 
 function Write-WorkStep([int]$Number, [int]$Total, [string]$Message) {
@@ -417,25 +431,16 @@ function Backup-Project([switch]$DirectDeploy) {
             }
         }
     }
-    Write-WorkStep 2 4 '커밋할 파일 확인 및 프로젝트 검사 준비'
+    Write-WorkStep 2 4 '커밋할 파일과 보호 경로 확인'
     $outgoing = @(Get-OutgoingPaths $base $head)
     $tracked = @(Get-NulPaths diff HEAD --name-only -z --no-renames --diff-filter=ACMT --)
     $untracked = @(Get-NulPaths ls-files --others --exclude-standard -z --)
     Assert-AllowedPaths ($outgoing + $tracked + $untracked)
-    $changed = @(Get-NulPaths diff HEAD --name-only -z --no-renames --) + $untracked +
-        @(Get-NulPaths diff --cached --name-only -z --no-renames --)
-    $checksNeeded = @($changed + $outgoing + $incoming | Where-Object { $_ -notmatch '\.(md|txt)$' }).Count -gt 0
-    if ($checksNeeded) {
-        if ($combineAfterSaving) { Write-Host '  프로젝트 검사는 병합 후에 실행합니다.' }
-        else { Invoke-ProjectChecks }
-    } elseif (-not $checksNeeded -and ($changed.Count -or $outgoing.Count)) {
-        Write-Host '문서 변경만 있어 프로젝트 검사를 생략합니다.'
-    }
 
     Write-WorkStep 3 4 '변경 스테이징 및 로컬 커밋'
     Assert-NoPendingOperation
     Assert-WorkBranch
-    if ((Invoke-Git rev-parse HEAD) -cne $head) { throw '검사 중 커밋이 바뀌었습니다. 다시 실행하세요.' }
+    if ((Invoke-Git rev-parse HEAD) -cne $head) { throw '백업 준비 중 커밋이 바뀌었습니다. 다시 실행하세요.' }
     Assert-AllowedPaths (@(Get-NulPaths diff HEAD --name-only -z --no-renames --diff-filter=ACMT --) +
         @(Get-NulPaths ls-files --others --exclude-standard -z --))
     if (@(Invoke-Git status --porcelain=v1 --untracked-files=all --ignore-submodules=none).Count) {
@@ -459,15 +464,7 @@ function Backup-Project([switch]$DirectDeploy) {
         } else {
             Merge-RemoteForBackup $base $savedHead
             if ($incoming -contains 'sync.config.json') {
-                throw '원격 프로젝트 설정이 변경되어 로컬에 병합했습니다. [2]를 다시 눌러 병합된 설정으로 검사하고 푸시하세요.'
-            }
-            if ($checksNeeded) {
-                Write-Host '  병합 결과를 검사합니다.'
-                $mergedHead = Invoke-Git rev-parse HEAD
-                try { Invoke-ProjectChecks } catch {
-                    throw "$($_.Exception.Message) 병합 결과는 로컬 커밋에 남아 있습니다."
-                }
-                if ((Invoke-Git rev-parse HEAD) -cne $mergedHead) { throw '검사 중 커밋이 바뀌었습니다. 다시 실행하세요.' }
+                throw '원격 프로젝트 설정을 로컬에 병합했습니다. 병합된 설정으로 진행하려면 [2] 또는 [3]을 다시 선택하세요.'
             }
             Assert-NoPendingOperation
             Assert-Clean
@@ -483,6 +480,14 @@ function Backup-Project([switch]$DirectDeploy) {
     }
     Assert-AllowedPaths @(Get-OutgoingPaths $base $head)
     if ($SyncConfig.deployment.mode -eq 'backup-push') {
+        Write-Host '  이 푸시는 자동 배포를 시작하므로 배포 전 검사를 실행합니다.'
+        try { Invoke-ProjectChecks } catch {
+            throw "$($_.Exception.Message) 커밋은 로컬에 남아 있습니다."
+        }
+        Assert-NoPendingOperation
+        Assert-Clean
+        Assert-WorkBranch
+        if ((Invoke-Git rev-parse HEAD) -cne $head) { throw '검사 중 커밋이 바뀌었습니다. 다시 실행하세요.' }
         Confirm-Publish "$Remote/$WorkBranch 백업 및 자동 배포" -DirectDeploy:$DirectDeploy
     }
     Write-WorkStep 4 4 '원격 작업 브랜치로 푸시 (push)'
