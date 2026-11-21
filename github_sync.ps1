@@ -10,14 +10,14 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 # 사용자에게 새 버전을 배포할 때 버전과 마지막 수정 날짜를 함께 갱신한다.
-$ToolVersion = '3.1.5'
+$ToolVersion = '3.1.6'
 $ToolUpdated = '2026-11-21'
 $ReleaseLabel = "v$ToolVersion | 최종 수정 $ToolUpdated"
 $QuietGit = @(if ($Action -eq 'Menu') { '--quiet' })
 $DefaultPrivatePattern = '(^|/)(\.private|\.git|data|outputs)(/|$)|(^|/)\.clasp(?:rc)?\.json$|(^|/)\.env($|\.)|\.(pem|key|pfx|p12)$|(^|/)([^/]*(credential|oauth|secret|token)[^/]*\.(json|env)|회원설정\.json|배포정보\.json|독서기록[^/]*\.json|[^/]*전체백업[^/]*\.json)$'
 
 function Find-Git {
-    $command = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue
+    $command = Get-Command git.exe -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
     foreach ($path in @(
         "$env:ProgramFiles\Git\cmd\git.exe",
@@ -234,10 +234,10 @@ function Read-SyncConfig {
 }
 
 function Find-NodeRuntime {
-    $installed = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
+    $installed = Get-Command node.exe -CommandType Application -All -ErrorAction SilentlyContinue
     foreach ($candidate in @(
-        $installed.Source,
-        "$env:ProgramFiles\nodejs\node.exe",
+        $installed.Source
+        "$env:ProgramFiles\nodejs\node.exe"
         "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
     )) {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
@@ -253,7 +253,7 @@ function Find-NodeRuntime {
 
 function Get-Executable([string]$Name) {
     if ($Name -in @('node','node.exe')) { return Find-NodeRuntime }
-    $command = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue
+    $command = Get-Command $Name -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue
     if (-not $command) { throw "실행 파일을 찾지 못했습니다: $Name" }
     return $command.Source
 }
@@ -269,7 +269,7 @@ function Invoke-NpmIfDefined([string]$Task) {
     $taskEntry = $package.scripts.PSObject.Properties[$Task]
     if (-not $taskEntry) { throw "package.json에 '$Task' 작업이 없습니다." }
     $node = Find-NodeRuntime
-    $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+    $npm = Get-Command npm.cmd -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue
     if ($npm) {
         Invoke-Step $npm.Source @('run', $Task) "npm run $Task"
     } elseif ($taskEntry.Value -match '^node ([A-Za-z0-9_./-]+\.(?:cjs|mjs|js))$' -and
