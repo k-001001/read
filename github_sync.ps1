@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 # 사용자에게 새 버전을 배포할 때 버전과 마지막 수정 날짜를 함께 갱신한다.
-$ToolVersion = '3.1.7'
+$ToolVersion = '3.1.8'
 $ToolUpdated = '2026-11-21'
 $ReleaseLabel = "v$ToolVersion | 최종 수정 $ToolUpdated"
 $QuietGit = @(if ($Action -eq 'Menu') { '--quiet' })
@@ -314,6 +314,16 @@ function Write-WorkStep([int]$Number, [int]$Total, [string]$Message) {
     }
 }
 
+function Show-TreeChanges([string]$Label, [string]$From, [string]$To) {
+    $changes = @(if ($From) {
+        Invoke-Git -c core.quotepath=false diff --no-ext-diff --no-textconv --name-status --find-renames $From $To --
+    } else {
+        Invoke-Git -c core.quotepath=false diff-tree --root --no-commit-id --diff-merges=first-parent -r --name-status --find-renames $To --
+    })
+    Write-Host "  ${Label}: $($changes.Count)개"
+    $changes | Out-Host
+}
+
 function Assert-AllowedPaths([string[]]$Paths) {
     $blocked = @($Paths | Where-Object {
         $_ -match $DefaultPrivatePattern -or ($ExtraPrivateRegex -and $ExtraPrivateRegex.IsMatch($_))
@@ -348,8 +358,6 @@ function Publish-Ref([string]$Commit, [string]$Branch) {
 function Confirm-Publish([string]$Target, [switch]$DirectDeploy) {
     if ($Yes) { return }
     if ($Action -ne 'Menu') { throw "배포 대상: $Target. 확인 후 -Yes를 붙여 실행하세요." }
-    Write-Host ''
-    Write-Host "  배포 대상: $Target" -ForegroundColor Yellow
     if ($DirectDeploy) { return }
     if ((Read-Host '배포 작업을 진행하려면 DEPLOY를 입력하세요 (취소: Enter)') -cne 'DEPLOY') {
         throw [OperationCanceledException]::new('배포 요청을 취소했습니다.')
@@ -360,7 +368,11 @@ function Start-Project {
     Write-WorkStep 1 3 '작업 트리에 미커밋 변경이 있는지 확인'
     Assert-NoPendingOperation
     Assert-Clean -AllowNewConfig
+    $previousBranch = Invoke-Git branch --show-current
+    $previousHead = & $GitExe rev-parse --verify --quiet HEAD
+    if ($previousHead) { Write-Host "  전환 전: $previousBranch @ $previousHead" }
     Write-WorkStep 2 3 '원격 커밋과 브랜치 정보 가져오기 (fetch)'
+    Write-Host "  조회 대상: $Remote/$WorkBranch"
     Update-RemoteRefs
     Write-WorkStep 3 3 '작업 브랜치로 전환하고 필요하면 원격 커밋 반영'
     if (Test-Ref "refs/heads/$WorkBranch") {
@@ -379,9 +391,18 @@ function Start-Project {
         Invoke-Git switch @QuietGit --no-overwrite-ignore --no-track -c $WorkBranch "refs/heads/$ReleaseBranch" | Out-Host
     }
     if (Test-Ref $WorkRef) {
+        $headBeforeMerge = Invoke-Git rev-parse HEAD
         if ($Action -eq 'Menu') { Write-Host '  새 원격 커밋이 있으면 fast-forward 방식으로 반영합니다.' }
         Invoke-Git merge @QuietGit --ff-only --no-overwrite-ignore $WorkRef | Out-Host
     }
+    $currentHead = Invoke-Git rev-parse HEAD
+    Write-Host "  작업 브랜치: $WorkBranch @ $currentHead"
+    if ($headBeforeMerge -and $headBeforeMerge -cne $currentHead) {
+        Write-Host '  원격에서 반영한 커밋'
+        Invoke-Git log --oneline "${headBeforeMerge}..${currentHead}" -- | Out-Host
+    }
+    if ($previousHead) { Show-TreeChanges '작업 시작 전후 파일 차이' $previousHead $currentHead }
+    else { Show-TreeChanges '선택한 커밋의 변경 파일' '' $currentHead }
     if ($Action -ne 'Menu') { Show-Status }
 }
 
@@ -412,12 +433,15 @@ function Backup-Project([switch]$DirectDeploy) {
     Assert-NoPendingOperation
     Assert-WorkBranch
     $head = Invoke-Git rev-parse --verify HEAD
+    Write-Host "  로컬 작업 브랜치: $WorkBranch @ $head"
+    Write-Host "  백업 대상: $Remote/$WorkBranch"
     Update-RemoteRefs
     $base = $null
     $incoming = @()
     $combineAfterSaving = $false
     if (Test-Ref $WorkRef) {
         $base = Invoke-Git rev-parse $WorkRef
+        Write-Host "  현재 원격 커밋: $base"
         if (-not (Test-Ancestor $base $head)) {
             if (-not (Test-Ancestor $head $base)) { throw '로컬과 원격 이력이 갈라졌습니다. 브랜치를 정리한 뒤 다시 실행하세요.' }
             if (@(Invoke-Git status --porcelain=v1 --untracked-files=all --ignore-submodules=none).Count) {
@@ -436,6 +460,7 @@ function Backup-Project([switch]$DirectDeploy) {
     $tracked = @(Get-NulPaths diff HEAD --name-only -z --no-renames --diff-filter=ACMT --)
     $untracked = @(Get-NulPaths ls-files --others --exclude-standard -z --)
     Assert-AllowedPaths ($outgoing + $tracked + $untracked)
+    $headBeforeBackup = $head
 
     Write-WorkStep 3 4 '변경 스테이징 및 로컬 커밋'
     Assert-NoPendingOperation
@@ -448,8 +473,8 @@ function Backup-Project([switch]$DirectDeploy) {
         Assert-AllowedPaths @(Get-NulPaths diff --cached --name-only -z --no-renames --diff-filter=ACMT --)
         $staged = @(Get-NulPaths diff --cached --name-only -z --no-renames --)
         if ($staged.Count) {
-            if ($Action -eq 'Menu') { Write-Host "  커밋에 포함할 경로: $($staged.Count)개" }
-            else { Invoke-Git -c core.quotepath=false diff --cached --stat | Out-Host }
+            Write-Host "  새 커밋에 포함할 경로: $($staged.Count)개 (A 추가 · M 수정 · D 삭제 · R 이름 변경)"
+            Invoke-Git -c core.quotepath=false diff --cached --no-ext-diff --no-textconv --name-status --find-renames -- | Out-Host
             Invoke-Git commit @QuietGit -m "작업 백업: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-Host
             if ($Action -eq 'Menu') { Write-Host "  로컬 커밋 생성: $(Invoke-Git rev-parse --short HEAD)" }
         }
@@ -479,6 +504,16 @@ function Backup-Project([switch]$DirectDeploy) {
         return
     }
     Assert-AllowedPaths @(Get-OutgoingPaths $base $head)
+    Write-Host "  전송할 커밋과 대상: $head → $Remote/$WorkBranch"
+    if ($base) {
+        Invoke-Git log --oneline "${base}..${head}" -- | Out-Host
+        if ($savedHead -ceq $headBeforeBackup -or $base -cne $headBeforeBackup -or $combineAfterSaving) {
+            Show-TreeChanges '원격 작업 브랜치와 전송할 파일 차이' $base $head
+        }
+    } else {
+        Write-Host '  원격 작업 브랜치를 새로 만듭니다.'
+        Invoke-Git -c core.quotepath=false log --oneline --name-status $head --not "--remotes=$Remote" -- | Out-Host
+    }
     if ($SyncConfig.deployment.mode -eq 'backup-push') {
         Write-Host '  이 푸시는 자동 배포를 시작하므로 배포 전 검사를 실행합니다.'
         try { Invoke-ProjectChecks } catch {
@@ -489,6 +524,8 @@ function Backup-Project([switch]$DirectDeploy) {
         Assert-WorkBranch
         if ((Invoke-Git rev-parse HEAD) -cne $head) { throw '검사 중 커밋이 바뀌었습니다. 다시 실행하세요.' }
         Confirm-Publish "$Remote/$WorkBranch 백업 및 자동 배포" -DirectDeploy:$DirectDeploy
+    } else {
+        Write-Host '  일반 백업입니다. 프로젝트 검사는 배포 단계에서 실행합니다.'
     }
     Write-WorkStep 4 4 '원격 작업 브랜치로 푸시 (push)'
     Publish-Ref $head $WorkBranch
@@ -516,9 +553,13 @@ function Deploy-Project {
     Assert-Clean
     Update-RemoteRefs
     $head = Invoke-Git rev-parse HEAD
-    if (-not (Test-Ref $WorkRef) -or $head -cne (Invoke-Git rev-parse $WorkRef)) {
+    $remoteHead = if (Test-Ref $WorkRef) { Invoke-Git rev-parse $WorkRef }
+    Write-Host "  로컬 $WorkBranch @ $head"
+    if ($remoteHead) { Write-Host "  원격 $Remote/$WorkBranch @ $remoteHead" }
+    if ($head -cne $remoteHead) {
         throw "배포하려면 로컬과 원격 작업 브랜치($Remote/$WorkBranch)의 커밋이 같아야 합니다. [1] 또는 [2]를 먼저 실행하세요."
     }
+    Write-Host "  배포 방식: $($deploy.mode)"
 
     switch ($deploy.mode) {
         'release-branch' {
@@ -551,6 +592,12 @@ function Deploy-Project {
             if (-not (Test-Path -LiteralPath $deployFile -PathType Leaf)) { throw "기존 배포 스크립트 없음: $($deploy.script)" }
             $target = "$($deploy.script) @ $head"
         }
+    }
+    Write-Host "  배포 대상: $target" -ForegroundColor Yellow
+    if ($release) {
+        Show-TreeChanges '기존 원격 배포 브랜치와 파일 차이' $release $head
+    } else {
+        Show-TreeChanges '선택한 커밋의 변경 파일' '' $head
     }
     Write-WorkStep 2 4 '배포할 커밋에 대해 프로젝트 검사 실행'
     Invoke-ProjectChecks
@@ -623,14 +670,25 @@ function Show-Status {
     } else {
         Invoke-Git --no-optional-locks -c core.quotepath=false status --short --branch | Out-Host
     }
+    $localHead = & $GitExe rev-parse --verify --quiet HEAD
+    if ($localHead) { Write-Host "  로컬 HEAD: $localHead" }
+    else { Write-Host '  로컬 HEAD: 첫 커밋 전' }
     if (Test-Ref $WorkRef) {
-        $counts = (Invoke-Git rev-list --left-right --count "HEAD...$WorkRef") -split '\s+'
+        $remoteHead = Invoke-Git rev-parse $WorkRef
+        Write-Host "  마지막으로 가져온 원격 커밋: $remoteHead"
+        if (-not $localHead) { return }
+        $counts = (Invoke-Git rev-list --left-right --count "${localHead}...${remoteHead}") -split '\s+'
         if ($Action -eq 'Menu') {
             Write-Host "  비교 대상: 마지막으로 가져온 원격 브랜치 $Remote/$WorkBranch"
             Write-Host "  현재 HEAD에만 있는 커밋: $($counts[0])개"
             Write-Host "  원격 브랜치에만 있는 커밋: $($counts[1])개"
         } else {
             Write-Host "현재 HEAD와 로컬에 기록된 $Remote/$WorkBranch 비교: 앞섬 $($counts[0]), 뒤처짐 $($counts[1])"
+        }
+        if ($localHead -cne $remoteHead) {
+            Write-Host '  서로 다른 커밋 (< 로컬 · > 원격)'
+            Invoke-Git log --left-right --oneline "${localHead}...${remoteHead}" -- | Out-Host
+            Show-TreeChanges '원격 기록에서 로컬 HEAD로 비교한 파일 차이' $remoteHead $localHead
         }
     } elseif ($Action -eq 'Menu') {
         Write-Host "  비교할 원격 작업 브랜치 기록이 없습니다: $Remote/$WorkBranch"
@@ -691,6 +749,7 @@ function Show-ConsolePage([string]$Title) {
     Write-Host ''
     Write-Host "  $Title" -ForegroundColor Cyan
     Write-Host "  프로젝트: $(Split-Path -Leaf $ProjectRoot)"
+    Write-Host "  작업 폴더: $ProjectRoot"
 }
 
 function Show-ProjectMenu([bool]$HasConfig, [string]$ConfigError, [string]$LastResult) {
